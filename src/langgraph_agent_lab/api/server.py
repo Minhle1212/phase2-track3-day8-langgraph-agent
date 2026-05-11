@@ -14,12 +14,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from ..extensions.mermaid_diagram import (
+    NODE_META,
+    build_graph_def,
+    generate_ascii,
+    generate_mermaid,
+)
 from ..graph import build_graph
-from ..metrics import metric_from_state, write_metrics, MetricsReport, ScenarioMetric, summarize_metrics
+from ..metrics import (
+    MetricsReport,
+    ScenarioMetric,
+    metric_from_state,
+    summarize_metrics,
+    write_metrics,
+)
 from ..persistence import build_checkpointer
 from ..scenarios import load_scenarios
-from ..state import AgentState, Route, Scenario, initial_state
-
+from ..state import AgentState, Scenario, initial_state
 
 # ── App lifespan: build graph once ────────────────────────────────────────────
 
@@ -109,6 +120,41 @@ class HistoryResponse(BaseModel):
 @app.get("/health")
 def health():
     return {"status": "ok", "version": "1.0.0"}
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    label: str
+
+
+class GraphNode(BaseModel):
+    id: str
+    color: str
+    description: str
+
+
+class GraphResponse(BaseModel):
+    mermaid: str
+    ascii: str
+    nodes: list[GraphNode]
+    edges: list[GraphEdge]
+
+
+@app.get("/graph", response_model=GraphResponse)
+def get_graph_diagram():
+    """Return the graph structure as Mermaid source, ASCII tree, and JSON."""
+    mermaid_src = generate_mermaid()
+    ascii_tree = generate_ascii()
+    nodes = [
+        GraphNode(id=name, color=meta.get("color", ""), description=meta.get("desc", ""))
+        for name, meta in NODE_META.items()
+    ]
+    edges = [
+        GraphEdge(source=src, target=tgt, label=lbl)
+        for src, tgt, lbl in build_graph_def()
+    ]
+    return GraphResponse(mermaid=mermaid_src, ascii=ascii_tree, nodes=nodes, edges=edges)
 
 
 @app.get("/scenarios", response_model=ScenariosResponse)
@@ -273,7 +319,6 @@ def get_history(thread_id: str):
         raise HTTPException(status_code=400, detail="No checkpointer configured")
 
     try:
-        from langgraph.checkpoint.base import get_checkpoint
         all_checkpoints = []
         # Walk all channel snapshots for the thread
         config = {"configurable": {"thread_id": thread_id}}
@@ -301,7 +346,6 @@ def get_history_state(thread_id: str, checkpoint_id: str):
         raise HTTPException(status_code=400, detail="No checkpointer configured")
 
     try:
-        from langgraph.checkpoint.base import get_checkpoint
         config = {"configurable": {"thread_id": thread_id, "checkpoint_id": checkpoint_id}}
         record = checkpointer.get(config)
         if record is None:

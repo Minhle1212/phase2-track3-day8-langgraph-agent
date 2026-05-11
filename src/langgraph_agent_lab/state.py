@@ -5,11 +5,20 @@ Students should extend the schema only when needed. Keep state lean and serializ
 
 from __future__ import annotations
 
-from enum import StrEnum
+import sys
+from enum import Enum
+
 from typing import Annotated, Any, TypedDict
 
 from operator import add
 from pydantic import BaseModel, Field, field_validator
+
+# StrEnum was added in Python 3.11; backport for 3.10
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+    class StrEnum(str, Enum):
+        pass
 
 
 class Route(StrEnum):

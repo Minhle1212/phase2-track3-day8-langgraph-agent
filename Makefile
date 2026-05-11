@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck run-scenarios grade-local demo-persistence run-ui run-api run-all clean
+.PHONY: install test lint typecheck run-scenarios grade-local demo-persistence demo-mermaid run-api run-all clean
 
 install:
 	pip install -e '.[dev]'
@@ -21,8 +21,8 @@ grade-local:
 demo-persistence:
 	python -m langgraph_agent_lab.extensions.persistence_demo
 
-run-ui:
-	streamlit run src/langgraph_agent_lab/ui/app.py --server.port 8501 --server.headless true
+demo-mermaid:
+	python -m langgraph_agent_lab.extensions.mermaid_diagram
 
 run-api:
 	uvicorn src.langgraph_agent_lab.api.server:app --reload --port 8000

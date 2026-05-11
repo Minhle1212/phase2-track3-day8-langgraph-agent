@@ -1,0 +1,127 @@
++======================================================================+
+|              LangGraph Agent - Workflow Overview                  |
++======================================================================+
+
+  LEGEND
+  ------
+  [solid arrow]  = unconditional edge
+  [label]        = conditional edge (routing decision)
+
+  COLOR CODING
+  ------------
+  [PURPLE] = risky / human-in-the-loop (intake, classify, finalize, risky_action, approval)
+  [BLUE]   = tool execution (tool node)
+  [GREEN]  = simple / success path (answer)
+  [AMBER]  = retry / evaluation / error-recovery (evaluate, retry)
+  [RED]    = dead-letter / failure terminal
+  [GRAY]   = clarification / missing-info (clarify)
+
+--------------------------------------------------------------------------
+
+                            > START
+                              |
+                              v
+                        +-----------+
+                        |  INTAKE   |  [PURPLE] Normalize query, detect PII
+                        +-----+-----+
+                              |
+                              v
+                        +-----------+
+                        | CLASSIFY  |  [PURPLE] Keyword-priority routing
+                        +-----+-----+
+
+       +-------------------+--------------------+-------------------+
+       |                   |                    |                   |
+   [simple]           [risky]               [error]          [missing_info]
+       |                   |                    |                   |
+       v                   v                    v                   v
+ +----------+       +------------+       +-----------+       +-----------+
+ |  ANSWER  |       |RISKY_ACTION|       |   RETRY   |       | CLARIFY  |
+ |  [GREEN] |       |  [PURPLE]  |       |  [AMBER]  |       |  [GRAY]  |
+ +----+------+       +------+-----+       +-----+-----+       +-----+-----+
+      |                   |                   |                  |
+      |            [requires approval]          |                  |
+      |                   |                   |                  |
+      |                   v                   |                  |
+      |             +-----------+             |                  |
+      |             | APPROVAL  |             |                  |
+      |             |  [PURPLE] |             |                  |
+      |             +-----+-----+             |                  |
+      |                   |                   |                  |
+      |          +--------+---------+         |                  |
+      |      [approved]          [rejected]    |                  |
+      |          |                   |        |                  |
+      |          |                   v        v                  v
+      |          |              +-----------+
+      |          |              |   TOOL    |  [BLUE] Execute mock tool
+      |          |              +-----+-----+
+      |          |                    |
+      |          +--------------------+
+      |                               |
+      v                               v
+ +------------------------------------------------------+
+ |                      TOOL / EVALUATE                  |
+ |         [AMBER] Done-check: retry or answer          |
+ |                   tool -> evaluate                    |
+ +---------------------------+--------------------------+
+                             |
+        +--------------------+--------------------+
+        |                                         |
+   [needs_retry]                          [success]
+        v                                         v
+   +-----------+                            +-----------+
+   |   RETRY   |                            |  ANSWER  |
+   |  [AMBER]  |                            |  [GREEN] |
+   +-----+-----+                            +-----+-----+
+         |                                         |
+         |             +------------------+        |
+    [attempt < max]     |  [exhausted]    |        |
+         |               v                  v        |
+         +-----> +-----------+        +-----------+   |
+                | DEAD_LETTER|        |    TOOL   |---+
+                |   [RED]    |        +-----+-----+
+                +-----+-------+              |
+                      |                      |
+                      +----------+-----------+
+                                 v
+                        +--------------------+
+                        |     FINALIZE      |  [PURPLE] Emit audit event
+                        +----------+---------+
+                                  |
+                                  v
+                               [ END ]
+
+--------------------------------------------------------------------------
+
+  ROUTING LOGIC (classify_node priority order)
+  ----------------------------------------------------------------------
+  1. RISKY        -> refund, delete, cancel, terminate, remove, revoke,
+                       send, suspend, ban, block, disable, close, ...
+  2. TOOL         -> status, order, lookup, find, search, get, check,
+                       retrieve, fetch, show, list, track, trace, ...
+  3. MISSING_INFO -> vague query (< 5 words) or contains placeholders:
+                       it, this, that, something, anything
+  4. ERROR        -> timeout, fail, failure, error, exception, crash,
+                       down, unavailable, unreachable, retry, recover, bug
+  5. SIMPLE       -> everything else (how-to, FAQ, informational)
+
+--------------------------------------------------------------------------
+
+  NODE REFERENCE
+  ------------------------------------------------------------------------
+ Node              Color       Description                                    
+ intake            [PURPLE]    Normalize query, detect PII, urgency signals   
+ classify          [PURPLE]    Keyword-priority routing to route handlers     
+ answer            [GREEN]     Return the final answer for simple queries     
+ tool              [BLUE]      Execute mock tool (order lookup, refund,       
+                               email, etc.)                                   
+ evaluate          [AMBER]     Done-check: detect failure patterns -> retry   
+                               or answer                                      
+ clarify           [GRAY]      Request missing information from user          
+ risky_action      [PURPLE]    Build structured JSON action proposal with     
+                               severity                                       
+ approval          [PURPLE]    Human-in-the-loop gate (mock or interrupt)     
+ retry             [AMBER]     Increment attempt counter, apply exponential   
+                               backoff                                        
+ dead_letter       [RED]       Log unresolvable failures with P1/P2 priority  
+ finalize          [PURPLE]    Emit final audit event, seal the run           

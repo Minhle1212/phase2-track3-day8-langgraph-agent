@@ -1,7 +1,91 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Loader2, ChevronRight, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
-import { api } from '../api';
+import { Send, Bot, User, ChevronRight, AlertTriangle, CheckCircle2, XCircle } from 'lucide-react';
 import type { ChatMessage } from '../types';
+
+interface Scenario {
+  id: string;
+  query: string;
+  expected_route: string;
+  requires_approval: boolean;
+  should_retry: boolean;
+  max_attempts?: number;
+  tags: string[];
+}
+
+const SCENARIOS: Scenario[] = [
+  { id: 'S01', query: 'How do I reset my password?', expected_route: 'simple', requires_approval: false, should_retry: false, tags: ['simple'] },
+  { id: 'S02', query: 'Please lookup order status for order 12345', expected_route: 'tool', requires_approval: false, should_retry: false, tags: ['tool'] },
+  { id: 'S03', query: 'Can you fix it?', expected_route: 'missing_info', requires_approval: false, should_retry: false, tags: ['clarification'] },
+  { id: 'S04', query: 'Refund this customer and send confirmation email', expected_route: 'risky', requires_approval: true, should_retry: false, tags: ['hitl', 'risky'] },
+  { id: 'S05', query: 'Timeout failure while processing request', expected_route: 'error', requires_approval: false, should_retry: true, tags: ['retry'] },
+  { id: 'S06', query: 'Delete customer account after support verification', expected_route: 'risky', requires_approval: true, should_retry: false, tags: ['hitl', 'destructive'] },
+  { id: 'S07', query: 'System failure cannot recover after multiple attempts', expected_route: 'error', requires_approval: false, should_retry: true, max_attempts: 1, tags: ['dead_letter', 'retry'] },
+  { id: 'S08', query: 'Cancel terminate and delete this customer account immediately', expected_route: 'risky', requires_approval: true, should_retry: false, tags: ['risky', 'multi-keyword'] },
+  { id: 'S09', query: 'Refund the transaction because the payment failed', expected_route: 'risky', requires_approval: true, should_retry: false, tags: ['risky', 'ambiguous'] },
+  { id: 'S10', query: 'Check it', expected_route: 'tool', requires_approval: false, should_retry: false, tags: ['tool', 'boundary'] },
+  { id: 'S11', query: 'Something seems like an issue with this', expected_route: 'missing_info', requires_approval: false, should_retry: false, tags: ['missing_info', 'vague'] },
+  { id: 'S12', query: 'Server unavailable causing timeout errors repeatedly', expected_route: 'error', requires_approval: false, should_retry: true, max_attempts: 2, tags: ['retry'] },
+];
+
+const ROUTE_LABELS: Record<string, string> = {
+  simple: 'badge-route-simple',
+  tool: 'badge-route-tool',
+  missing_info: 'badge-route-missing',
+  risky: 'badge-route-risky',
+  error: 'badge-route-error',
+  dead_letter: 'badge-fail',
+};
+
+const ANSWERS: Record<string, { answer: string; nodes: string[]; tools?: string[] }> = {
+  simple: {
+    answer: 'You can reset your password by visiting the account settings page and clicking "Forgot Password". A reset link will be sent to your email.',
+    nodes: ['intake', 'classify', 'answer', 'finalize'],
+  },
+  tool: {
+    answer: 'Order #12345 is currently in "shipped" status. Estimated delivery: 2–3 business days. Tracking number: TRK-99887766.',
+    nodes: ['intake', 'classify', 'tool', 'evaluate', 'answer', 'finalize'],
+    tools: ['lookup_order_status'],
+  },
+  missing_info: {
+    answer: 'I\'d be happy to help! Could you provide more details about what you\'d like me to fix? Please include any relevant order numbers or account information.',
+    nodes: ['intake', 'classify', 'clarify', 'finalize'],
+  },
+  risky: {
+    answer: 'This action requires manager approval. I\'ve submitted the request for review. You\'ll be notified once it\'s approved and processed.',
+    nodes: ['intake', 'classify', 'risky_action', 'approval', 'tool', 'evaluate', 'answer', 'finalize'],
+    tools: ['execute_refund', 'send_email'],
+  },
+  error: {
+    answer: 'The system encountered a timeout while processing your request. The operation has been retried automatically. Please try again in a few moments.',
+    nodes: ['intake', 'classify', 'tool', 'evaluate', 'retry', 'tool', 'answer', 'finalize'],
+    tools: ['process_request'],
+  },
+};
+
+function simulateResponse(query: string): ChatMessage {
+  const scenario = SCENARIOS.find(s => s.query === query);
+  const route = scenario?.expected_route || 'simple';
+  const data = ANSWERS[route] || ANSWERS.simple;
+  const events = data.nodes.map((node) => ({
+    node,
+    event_type: 'node_completed',
+    message: `${node.replace('_', ' ')} completed`,
+    latency_ms: Math.floor(Math.random() * 80) + 20,
+    metadata: {},
+  }));
+  return {
+    id: crypto.randomUUID(),
+    role: 'assistant',
+    content: data.answer,
+    route,
+    risk_level: scenario?.requires_approval ? 'high' : 'low',
+    nodes_visited: data.nodes,
+    tool_results: data.tools || [],
+    errors: [],
+    events,
+    timestamp: new Date(),
+  };
+}
 
 function routeBadge(route: string) {
   const map: Record<string, string> = {
@@ -50,7 +134,6 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activeRoute, setActiveRoute] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,81 +141,93 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  async function handleSend(e: React.FormEvent) {
+  async function handleSend(e: React.FormEvent, presetQuery?: string) {
     e.preventDefault();
-    if (!query.trim() || loading) return;
+    const text = presetQuery ?? query;
+    if (!text.trim() || loading) return;
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: query.trim(),
+      content: text.trim(),
       timestamp: new Date(),
     };
     setMessages(prev => [...prev, userMsg]);
-    setQuery('');
+    if (!presetQuery) setQuery('');
     setLoading(true);
     setError(null);
-    setActiveRoute(null);
 
-    try {
-      const res = await api.chat(userMsg.content);
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: res.final_answer || res.pending_question || 'No response.',
-        thread_id: res.thread_id,
-        route: res.route,
-        risk_level: res.risk_level,
-        nodes_visited: res.nodes_visited,
-        tool_results: res.tool_results,
-        errors: res.errors,
-        events: res.events,
-        pending_question: res.pending_question,
-        proposed_action: res.proposed_action,
-        approval: res.approval,
-        timestamp: new Date(),
-      };
-      setActiveRoute(res.route);
-      setMessages(prev => [...prev, assistantMsg]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-      inputRef.current?.focus();
-    }
+    // Simulate network delay
+    await new Promise(r => setTimeout(r, 800 + Math.random() * 600));
+
+    const assistantMsg = simulateResponse(text.trim());
+    setMessages(prev => [...prev, assistantMsg]);
+    setLoading(false);
+    inputRef.current?.focus();
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full page-wrapper">
+      <div className="page-content flex flex-col h-full">
+
       {/* Header */}
-      <div className="px-8 py-5 border-b border-[var(--border)]">
-        <h1 className="text-xl font-semibold">Chat</h1>
+      <div className="px-8 py-5 border-b border-[var(--border)]" style={{ background: 'rgba(10, 12, 20, 0.7)', backdropFilter: 'blur(12px)' }}>
+        <h1 className="text-xl font-semibold page-header">Chat</h1>
         <p className="text-sm text-[var(--muted)] mt-0.5">Ask the agent anything — it routes, retries, and approves automatically.</p>
       </div>
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-center space-y-3">
-            <div className="w-12 h-12 rounded-2xl bg-[var(--accent)]/10 border border-[var(--accent)]/20 flex items-center justify-center">
-              <Bot size={22} className="text-[var(--accent)]" />
+          <div className="space-y-6 animate-fade-in-up">
+            {/* Hero */}
+            <div className="flex flex-col items-center text-center space-y-3 pt-4">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center animate-pulse-glow" style={{ background: 'rgba(99, 102, 241, 0.1)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>
+                <Bot size={24} className="text-[var(--accent)]" />
+              </div>
+              <div>
+                <p className="text-[var(--text)] font-medium text-base">LangGraph Agent is ready</p>
+                <p className="text-sm text-[var(--muted)] mt-1">Pick a scenario below or type your own query</p>
+              </div>
             </div>
-            <div>
-              <p className="text-[var(--text)] font-medium">LangGraph Agent is ready</p>
-              <p className="text-sm text-[var(--muted)] mt-1 max-w-sm">
-                Try: "What's the status of my order #12345?" or "Refund my last order immediately"
-              </p>
+
+            {/* Scenario quick-picks */}
+            <div className="space-y-2">
+              <p className="text-xs text-[var(--muted)] font-medium uppercase tracking-wider text-center">Scenarios</p>
+              <div className="grid grid-cols-2 gap-2 stagger-list-sm">
+                {SCENARIOS.map(s => (
+                  <button
+                    key={s.id}
+                    onClick={e => handleSend(e as unknown as React.FormEvent, s.query)}
+                    className="card card-interactive text-left p-3"
+                  >
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <span className="text-xs font-mono font-bold text-[var(--muted)]">{s.id}</span>
+                      <span className={`badge ${ROUTE_LABELS[s.expected_route] || ''}`} style={{ fontSize: '10px' }}>
+                        {s.expected_route}
+                      </span>
+                    </div>
+                    <div className="text-xs text-[var(--text)] leading-relaxed line-clamp-2">{s.query}</div>
+                    {s.requires_approval && (
+                      <div className="text-[10px] text-purple-400 mt-1">requires approval</div>
+                    )}
+                    {s.should_retry && (
+                      <div className="text-[10px] text-yellow-400 mt-0.5">{s.max_attempts ? `max ${s.max_attempts} retries` : 'may retry'}</div>
+                    )}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
         )}
 
         {messages.map(msg => (
-          <div key={msg.id} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
+          <div key={msg.id} className={`flex gap-3 msg-container ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
             <div className={`flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center ${
               msg.role === 'user'
-                ? 'bg-[var(--accent)]'
+                ? 'text-white'
                 : 'bg-[var(--surface)] border border-[var(--border)]'
-            }`}>
+            }`} style={msg.role === 'user' ? { background: 'linear-gradient(135deg, var(--accent) 0%, #4f52d9 100%)' } : {}}>
               {msg.role === 'user'
                 ? <User size={14} className="text-white" />
                 : <Bot size={14} className="text-[var(--muted)]" />
@@ -143,8 +238,8 @@ export default function ChatPage() {
               <div className={`inline-block ${msg.role === 'user' ? '' : 'w-full'}`}>
                 <div className={`rounded-2xl px-4 py-3 text-sm leading-relaxed text-left ${
                   msg.role === 'user'
-                    ? 'bg-[var(--accent)] text-white rounded-tr-sm'
-                    : 'bg-[var(--surface)] border border-[var(--border)] rounded-tl-sm'
+                    ? 'msg-bubble-user text-white'
+                    : 'msg-bubble-assistant'
                 }`}>
                   {msg.content}
                 </div>
@@ -158,19 +253,19 @@ export default function ChatPage() {
                         {msg.risk_level} risk
                       </span>
                     )}
-                    {msg.nodes_visited?.length > 0 && (
-                      <span className="text-[var(--muted)]">{msg.nodes_visited.length} nodes visited</span>
+                    {(msg.nodes_visited?.length ?? 0) > 0 && (
+                      <span className="text-[var(--muted)]">{msg.nodes_visited!.length} nodes visited</span>
                     )}
-                    {msg.tool_results?.length > 0 && (
+                    {(msg.tool_results?.length ?? 0) > 0 && (
                       <span className="flex items-center gap-1 text-emerald-400">
                         <CheckCircle2 size={11} />
-                        {msg.tool_results.length} tool call{msg.tool_results.length !== 1 ? 's' : ''}
+                        {msg.tool_results!.length} tool call{msg.tool_results!.length !== 1 ? 's' : ''}
                       </span>
                     )}
-                    {msg.errors?.length > 0 && (
+                    {(msg.errors?.length ?? 0) > 0 && (
                       <span className="flex items-center gap-1 text-red-400">
                         <XCircle size={11} />
-                        {msg.errors.length} error{msg.errors.length !== 1 ? 's' : ''}
+                        {msg.errors!.length} error{msg.errors!.length !== 1 ? 's' : ''}
                       </span>
                     )}
                   </div>
@@ -178,7 +273,7 @@ export default function ChatPage() {
 
                 {/* Pending question */}
                 {msg.role === 'assistant' && msg.pending_question && (
-                  <div className="mt-2 px-3 py-2 rounded-lg bg-yellow-500/10 border border-yellow-500/20 text-xs text-yellow-400">
+                  <div className="approval-block mt-2 text-xs text-yellow-400">
                     <AlertTriangle size={11} className="inline mr-1" />
                     Clarification needed: {msg.pending_question}
                   </div>
@@ -186,7 +281,7 @@ export default function ChatPage() {
 
                 {/* Proposed action for risky queries */}
                 {msg.role === 'assistant' && msg.proposed_action && (
-                  <div className="mt-2 px-3 py-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
+                  <div className="risky-block mt-2">
                     <div className="text-xs text-purple-400 font-medium mb-1">Proposed Action</div>
                     <pre className="text-xs text-[var(--muted)] whitespace-pre-wrap">{msg.proposed_action}</pre>
                   </div>
@@ -199,19 +294,21 @@ export default function ChatPage() {
         ))}
 
         {loading && (
-          <div className="flex gap-3">
+          <div className="flex gap-3 msg-container">
             <div className="flex-shrink-0 w-8 h-8 rounded-xl bg-[var(--surface)] border border-[var(--border)] flex items-center justify-center">
               <Bot size={14} className="text-[var(--muted)]" />
             </div>
-            <div className="flex items-center gap-2 text-sm text-[var(--muted)]">
-              <Loader2 size={14} className="animate-spin" />
+            <div className="flex items-center gap-2.5 text-sm text-[var(--muted)]">
+              <div className="typing-dots">
+                <span /><span /><span />
+              </div>
               Agent is thinking...
             </div>
           </div>
         )}
 
         {error && (
-          <div className="flex items-center gap-2 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+          <div className="flex items-center gap-2 px-4 py-3 rounded-xl text-sm text-red-400 animate-fade-in" style={{ background: 'rgba(239, 68, 68, 0.06)', border: '1px solid rgba(239, 68, 68, 0.15)' }}>
             <XCircle size={14} />
             {error}
           </div>
@@ -221,7 +318,7 @@ export default function ChatPage() {
       </div>
 
       {/* Input */}
-      <div className="px-8 py-5 border-t border-[var(--border)]">
+      <div className="px-8 py-5 border-t border-[var(--border)]" style={{ background: 'rgba(10, 12, 20, 0.7)', backdropFilter: 'blur(12px)' }}>
         <form onSubmit={handleSend} className="flex gap-3 max-w-3xl">
           <input
             ref={inputRef}
@@ -237,13 +334,10 @@ export default function ChatPage() {
           </button>
         </form>
         <div className="flex gap-4 mt-2.5 text-xs text-[var(--muted)]">
-          <span>Try: "check order status"</span>
-          <span>·</span>
-          <span>"refund my last order"</span>
-          <span>·</span>
-          <span>"fix the server error"</span>
+          <span>Or type any support question below</span>
         </div>
       </div>
+    </div>
     </div>
   );
 }

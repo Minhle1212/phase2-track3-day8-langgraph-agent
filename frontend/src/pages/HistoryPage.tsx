@@ -26,7 +26,7 @@ export default function HistoryPage() {
     setCheckpointState(null);
     try {
       const data = await api.getHistory(threadId.trim());
-      setCheckpoints(data.checkpoints as CheckpointEntry[]);
+      setCheckpoints(data.checkpoints as unknown as CheckpointEntry[]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load history');
     } finally {
@@ -49,9 +49,10 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="px-8 py-6">
+    <div className="px-8 py-6 page-wrapper">
+      <div className="page-content">
       <div className="mb-6">
-        <h1 className="text-xl font-semibold flex items-center gap-2">
+        <h1 className="text-xl font-semibold page-header flex items-center gap-2">
           <History size={20} />
           Checkpoint History
         </h1>
@@ -63,14 +64,14 @@ export default function HistoryPage() {
       {/* Search bar */}
       <div className="flex gap-3 mb-6">
         <div className="flex-1 relative">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]" />
+          <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-[var(--muted)] pointer-events-none" />
           <input
             type="text"
             value={threadId}
             onChange={e => setThreadId(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && loadHistory()}
             placeholder="Enter thread ID (e.g. thread-scenario-01)"
-            className="input pl-9"
+            className="input pl-10"
           />
         </div>
         <button onClick={loadHistory} disabled={loading || !threadId.trim()} className="btn-primary">
@@ -79,19 +80,19 @@ export default function HistoryPage() {
       </div>
 
       {error && (
-        <div className="mb-6 px-4 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-sm text-red-400">
+        <div className="mb-6 px-4 py-3 rounded-xl text-sm text-red-400 animate-fade-in" style={{ background: 'rgba(239, 68, 68, 0.06)', border: '1px solid rgba(239, 68, 68, 0.15)' }}>
           {error}
         </div>
       )}
 
-      <div className="grid grid-cols-3 gap-5">
+      <div className="grid grid-cols-3 gap-5 stagger-list">
         {/* Checkpoint list */}
         <div className="card">
           <div className="flex items-center gap-2 mb-4">
             <Clock size={14} className="text-[var(--muted)]" />
             <span className="text-sm font-medium">Checkpoints</span>
             {checkpoints.length > 0 && (
-              <span className="ml-auto badge bg-[var(--bg)] text-[var(--muted)]">{checkpoints.length}</span>
+              <span className="ml-auto badge" style={{ background: 'rgba(99, 102, 241, 0.1)', color: 'var(--accent-bright)', border: '1px solid rgba(99, 102, 241, 0.2)' }}>{checkpoints.length}</span>
             )}
           </div>
 
@@ -115,10 +116,10 @@ export default function HistoryPage() {
                   key={cp.checkpoint_id || idx}
                   onClick={() => cp.checkpoint_id && loadCheckpointState(cp.checkpoint_id)}
                   disabled={!cp.checkpoint_id}
-                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors text-sm ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all text-sm ${
                     selectedCheckpoint === cp.checkpoint_id
-                      ? 'bg-[var(--accent)]/15 text-[var(--accent)]'
-                      : 'hover:bg-[var(--bg)] text-[var(--text)]'
+                      ? 'active'
+                      : 'nav-item'
                   } ${!cp.checkpoint_id ? 'opacity-40 cursor-default' : ''}`}
                 >
                   <GitBranch size={12} className="flex-shrink-0" />
@@ -147,8 +148,10 @@ export default function HistoryPage() {
           </div>
 
           {!selectedCheckpoint && !loadingState && (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <GitBranch size={28} className="text-[var(--muted)] mb-2" />
+            <div className="flex flex-col items-center justify-center py-16 text-center animate-fade-in">
+              <div className="w-14 h-14 rounded-2xl flex items-center justify-center mb-3" style={{ background: 'rgba(99, 102, 241, 0.06)', border: '1px solid rgba(99, 102, 241, 0.1)' }}>
+                <GitBranch size={22} className="text-[var(--muted)]" />
+              </div>
               <p className="text-sm text-[var(--muted)]">Select a checkpoint to view its state</p>
             </div>
           )}
@@ -161,12 +164,13 @@ export default function HistoryPage() {
           )}
 
           {checkpointState && !loadingState && (
-            <pre className="text-xs bg-[var(--bg)] rounded-lg p-4 overflow-auto max-h-[500px] font-mono leading-relaxed text-[var(--muted)]">
+            <pre className="text-xs animate-scale-in" style={{ background: 'var(--bg)', borderRadius: '12px', padding: '16px', overflow: 'auto', maxHeight: '500px', fontFamily: "'JetBrains Mono', 'Fira Code', monospace", lineHeight: '1.7', color: 'var(--muted)', border: '1px solid var(--border)' }}>
               {JSON.stringify(checkpointState, null, 2)}
             </pre>
           )}
         </div>
       </div>
+    </div>
     </div>
   );
 }

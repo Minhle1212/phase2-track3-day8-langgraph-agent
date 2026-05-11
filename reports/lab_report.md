@@ -2,8 +2,7 @@
 
 ## 1. Team / Student
 
-- Name: [student name]
-- Repo/commit: [git repo URL / commit hash]
+- Name: Le Hoang Minh 2A202600471
 - Date: 2026-05-11
 
 ## 2. Architecture

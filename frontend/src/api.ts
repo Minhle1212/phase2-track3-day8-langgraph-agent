@@ -37,4 +37,7 @@ export const api = {
     request<Record<string, unknown>>(
       `/history/${encodeURIComponent(threadId)}/state/${encodeURIComponent(checkpointId)}`
     ),
+
+  getGraph: () =>
+    request<{ mermaid: string; ascii: string; nodes: { id: string; color: string; description: string }[]; edges: { source: string; target: string; label: string }[] }>('/graph'),
 };

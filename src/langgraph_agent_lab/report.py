@@ -143,7 +143,7 @@ def render_report_stub(metrics: MetricsReport) -> str:
         "- [ ] Time-travel / replay from checkpoint",
         "- [ ] Parallel fan-out for multi-tool queries",
         "- [ ] Real HITL interrupt demo",
-        "- [ ] Graph diagram export (`langgraph visualize`)",
+        "- [x] Graph diagram export (`langgraph visualize`)",
         "- [ ] Structured tool result schema",
         "",
         "## 8. Improvement Plan",
