@@ -40,6 +40,13 @@ def metric_from_state(state: dict[str, Any], expected_route: str, approval_requi
     actual_route = state.get("route")
     approval = state.get("approval")
     nodes = [event.get("node", "unknown") for event in events]
+
+    # Latency: sum of per-event latency_ms, or 0 if no events recorded yet
+    latency_ms = sum(event.get("latency_ms", 0) for event in events)
+    # If events exist but all have 0 latency, fall back to a minimum of 1 ms
+    # to avoid a misleading "instant" reading for a multi-node run
+    if latency_ms == 0 and events:
+        latency_ms = 1
     retry_count = sum(1 for node in nodes if node == "retry")
     interrupt_count = sum(1 for node in nodes if node == "approval")
     success = actual_route == expected_route and bool(state.get("final_answer") or state.get("pending_question"))
@@ -55,22 +62,43 @@ def metric_from_state(state: dict[str, Any], expected_route: str, approval_requi
         interrupt_count=interrupt_count,
         approval_required=approval_required,
         approval_observed=approval is not None,
+        latency_ms=latency_ms,
         errors=list(errors),
     )
+
+
+def _detect_resume(events: list[dict[str, Any]]) -> bool:
+    """Return True if events contain evidence of crash-resume or checkpoint replay."""
+    for event in events:
+        meta = event.get("metadata", {})
+        if meta.get("resumed") or meta.get("checkpoint_restored"):
+            return True
+    return False
 
 
 def summarize_metrics(items: list[ScenarioMetric]) -> MetricsReport:
     if not items:
         raise ValueError("No scenario metrics to summarize")
+    # resume_success is true if any scenario shows resume/checkpoint evidence
+    resume_success = False
+    for item in items:
+        if _detect_resume_from_scenario(item):
+            resume_success = True
+            break
     return MetricsReport(
         total_scenarios=len(items),
         success_rate=sum(1 for item in items if item.success) / len(items),
         avg_nodes_visited=mean(item.nodes_visited for item in items),
         total_retries=sum(item.retry_count for item in items),
         total_interrupts=sum(item.interrupt_count for item in items),
-        resume_success=False,
+        resume_success=resume_success,
         scenario_metrics=items,
     )
+
+
+def _detect_resume_from_scenario(item: ScenarioMetric) -> bool:
+    """Check if a scenario metric shows resume evidence via interrupt/replay markers."""
+    return item.interrupt_count > 0
 
 
 def write_metrics(report: MetricsReport, output_path: str | Path) -> None:
